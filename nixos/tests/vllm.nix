@@ -93,6 +93,8 @@ in
         instances = {
           x = {
             model = "test/model-x";
+            host = "0.0.0.0";
+            openFirewall = true;
             port = 8001;
             gpu = 0;
             settings = {
@@ -124,6 +126,17 @@ in
     };
 
     # Never booted; only its evaluated configuration is inspected.
+    firewallLoopback = {
+      services.vllm = {
+        enable = true;
+        package = stubVllm;
+        instances.f = {
+          model = "test/model-f";
+          openFirewall = true;
+        };
+      };
+    };
+
     warn = {
       services.vllm = {
         enable = true;
@@ -157,6 +170,14 @@ in
       assert len(warnings) == 1 and "gpu-memory-utilization" in warnings[0], warnings
       shared_warnings = ${builtins.toJSON nodes.shared.config.warnings}
       assert shared_warnings == [], shared_warnings
+
+      # only instances with openFirewall get their port opened
+      assert ${builtins.toJSON nodes.shared.config.networking.firewall.allowedTCPPorts} == [8001]
+      assert ${builtins.toJSON nodes.single.config.networking.firewall.allowedTCPPorts} == []
+
+      # openFirewall on a loopback-only instance is pointless and warned about
+      firewall_warnings = ${builtins.toJSON nodes.firewallLoopback.config.warnings}
+      assert len(firewall_warnings) == 1 and "openFirewall" in firewall_warnings[0], firewall_warnings
 
       single.start()
       shared.start()

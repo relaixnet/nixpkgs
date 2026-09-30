@@ -53,6 +53,15 @@ let
         '';
         default = "127.0.0.1";
       };
+      openFirewall = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Whether to open the TCP port of this instance in the firewall. Only useful if
+          {option}`host` is not a loopback address. Consider setting `VLLM_API_KEY` through
+          {option}`environmentFile` when exposing an instance to the network.
+        '';
+      };
       environmentFile = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
         default = null;
@@ -119,6 +128,15 @@ let
       (lib.length group > 1 && !(lib.any (n: hasMemoryUtilizationSet enabledInstanceConfigs.${n}) group))
       "vLLM instances sharing a GPU (${lib.concatStringsSep ", " group}) do not set `gpu-memory-utilization`; this can cause CUDA out-of-memory or startup races when colocating on one device. See https://docs.vllm.ai/en/latest/configuration/conserving_memory/"
   ) sameGpuGroups;
+
+  isLoopback = host: host == "localhost" || host == "::1" || lib.hasPrefix "127." host;
+
+  firewallInstances = lib.filterAttrs (_: inst: inst.openFirewall) enabledInstanceConfigs;
+
+  firewallWarnings = lib.mapAttrsToList (
+    name: inst:
+    "vLLM instance ${name} has `openFirewall` set but listens on the loopback address ${inst.host}, so it is not reachable from the network. Set `host` to \"0.0.0.0\" or another external address."
+  ) (lib.filterAttrs (_: inst: isLoopback inst.host) firewallInstances);
 
   createVllmInstanceService =
     name: instance:
@@ -224,7 +242,9 @@ in
         message = "vLLM instances ${lib.concatStringsSep ", " names} are all configured to use port ${port}. Each instance needs a distinct port.";
       }) duplicatePorts;
 
-    warnings = gpuMemoryWarnings;
+    warnings = gpuMemoryWarnings ++ firewallWarnings;
+
+    networking.firewall.allowedTCPPorts = lib.mapAttrsToList (_: inst: inst.port) firewallInstances;
 
     systemd.services = lib.mapAttrs' (
       name: inst: lib.nameValuePair "vllm-${name}" (createVllmInstanceService name inst)
