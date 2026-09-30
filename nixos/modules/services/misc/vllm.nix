@@ -7,7 +7,7 @@
 with lib;
 let
   cfg = config.services.vllm;
-
+  
   instanceConfig = { name, config, ... }: {
     options = {
       enable = mkEnableOption "Enable this vLLM instance" // {
@@ -109,7 +109,10 @@ let
         instance.host
         "--port"
         (toString instance.port)
+        "--config"
+        configFile
       ];
+      configFile = (pkgs.formats.yaml { }).generate "vllm-${name}.yaml" instance.settings;
       afterName = afterByName.${name} or null;
     in
     {
@@ -125,7 +128,7 @@ let
             toString instance.gpu;
       };
       serviceConfig = {
-        ExecStart = "${pkgs.vllm}/bin/vllm ${lib.escapeShellArgs args} --json-args '${escapeShellArg (builtins.toJSON instance.settings)}'";
+        ExecStart = "${pkgs.vllm}/bin/vllm ${lib.escapeShellArgs args}";
         Restart = "on-failure";
         RestartSec = 10;
       };
