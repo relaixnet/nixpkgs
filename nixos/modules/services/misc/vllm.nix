@@ -84,13 +84,17 @@ let
       key: lib.sort (a: b: a < b) (lib.filter (n: gpuKey enabledInstanceConfigs.${n}.gpu == key) withGpu)
     ) keys;
 
-  # start instances that share a GPU in the order they are defined in the configuration, so that they can set their memory budgets before the next instance starts
+  # Instances that share a GPU are started one after another (alphabetically by name).
+  # Each one is only considered started once it answers its health check (see
+  # `readinessGate`), so the next instance sees the memory the previous one claimed.
   afterByName = lib.listToAttrs (
     lib.concatMap (
       group:
       lib.imap0 (i: n: lib.nameValuePair n (if i == 0 then null else lib.elemAt group (i - 1))) group
     ) sameGpuGroups
   );
+
+  sharedGpuNames = lib.concatLists (lib.filter (group: lib.length group > 1) sameGpuGroups);
 
   hasMemoryUtilizationSet = inst: inst.settings ? "gpu-memory-utilization";
 
@@ -116,6 +120,22 @@ let
       ];
       configFile = settingsFormat.generate "vllm-${name}.yaml" instance.settings;
       afterName = afterByName.${name} or null;
+
+      # Block the end of the start job until vLLM is serving, so units ordered
+      # after this one only start once the model is loaded and GPU memory is claimed.
+      healthHost =
+        if instance.host == "0.0.0.0" || instance.host == "::" then
+          "127.0.0.1"
+        else if lib.hasInfix ":" instance.host then
+          "[${instance.host}]"
+        else
+          instance.host;
+      readinessGate = pkgs.writeShellScript "vllm-${name}-wait-ready" ''
+        until ${lib.getExe pkgs.curl} --silent --fail --output /dev/null \
+          http://${healthHost}:${toString instance.port}/health; do
+          sleep 2
+        done
+      '';
     in
     {
       description = "vLLM instance (${name}: ${instance.model})";
@@ -143,6 +163,10 @@ let
         ];
         Restart = "on-failure";
         RestartSec = 10;
+      }
+      // lib.optionalAttrs (lib.elem name sharedGpuNames) {
+        ExecStartPost = readinessGate;
+        TimeoutStartSec = "infinity";
       };
     };
 in

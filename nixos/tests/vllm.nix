@@ -5,7 +5,9 @@ let
     import argparse
     import json
     import os
+    import re
     import sys
+    import time
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     parser = argparse.ArgumentParser()
@@ -19,12 +21,19 @@ let
     with open(args.config) as f:
         config = f.read()
 
+    # simulate model loading time: `startup-delay: N` in the config file
+    delay = re.search(r"^startup-delay: (\d+)$", config, re.MULTILINE)
+    if delay:
+        time.sleep(int(delay.group(1)))
+
     env_keys = ["CUDA_VISIBLE_DEVICES", "HF_HOME", "VLLM_CACHE_ROOT"]
 
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path == "/v1/models":
+            if self.path == "/health":
+                body = {}
+            elif self.path == "/v1/models":
                 body = {"data": [{"id": args.model}]}
             elif self.path == "/debug":
                 body = {
@@ -78,7 +87,10 @@ in
             model = "test/model-x";
             port = 8001;
             gpu = 0;
-            settings.gpu-memory-utilization = 0.4;
+            settings = {
+              gpu-memory-utilization = 0.4;
+              startup-delay = 5;
+            };
           };
           y = {
             model = "test/model-y";
@@ -172,6 +184,16 @@ in
 
           after = shared.succeed("systemctl show -p After --value vllm-y.service")
           assert "vllm-x.service" in after, after
+          # y must only start once x has finished starting (i.e. answered /health)
+          def ts(unit, prop):
+              out = shared.succeed(f"systemctl show -p {prop} --value {unit}.service")
+              return int(out.strip())
+
+          x_active = ts("vllm-x", "ActiveEnterTimestampMonotonic")
+          y_exec = ts("vllm-y", "ExecMainStartTimestampMonotonic")
+          assert y_exec >= x_active, (x_active, y_exec)
+          assert y_exec - ts("vllm-x", "ExecMainStartTimestampMonotonic") >= 5_000_000, "y started before x finished loading"
+
           after_x = shared.succeed("systemctl show -p After --value vllm-x.service")
           assert "vllm-y.service" not in after_x, after_x
 
