@@ -162,7 +162,9 @@ let
           "render"
         ];
         Restart = "on-failure";
-        RestartSec = 10;
+        RestartSec = "10s";
+        RestartSteps = 5;
+        RestartMaxDelaySec = "5min";
       }
       // lib.optionalAttrs (lib.elem name sharedGpuNames) {
         ExecStartPost = readinessGate;

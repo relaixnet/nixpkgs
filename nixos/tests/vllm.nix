@@ -194,6 +194,12 @@ in
           assert y_exec >= x_active, (x_active, y_exec)
           assert y_exec - ts("vllm-x", "ExecMainStartTimestampMonotonic") >= 5_000_000, "y started before x finished loading"
 
+          # the readiness gate keeps the start job open, so it must not time out;
+          # w has a different GPU set, gets no gate and keeps the default timeout
+          for unit, expected in [("vllm-x", "infinity"), ("vllm-y", "infinity"), ("vllm-w", "5min")]:
+              timeout = shared.succeed(f"systemctl show -p TimeoutStartUSec {unit}.service")
+              assert timeout.strip() == f"TimeoutStartUSec={expected}", (unit, timeout)
+
           after_x = shared.succeed("systemctl show -p After --value vllm-x.service")
           assert "vllm-y.service" not in after_x, after_x
 
