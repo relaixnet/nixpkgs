@@ -53,6 +53,21 @@ let
         '';
         default = "127.0.0.1";
       };
+      environmentFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          Path to a file with environment variables for this instance, in the format
+          described in {manpage}`systemd.exec(5)`. Use it for secrets so they don't end up in
+          the world-readable Nix store, for example:
+
+          ```
+          HF_TOKEN=hf_xxx # huggingface token for gated models
+          VLLM_API_KEY=some-secret # OpenAI API key to require for requests to the vLLM API
+          ```
+        '';
+        example = "/run/secrets/vllm-gemma.env";
+      };
       gpu = lib.mkOption {
         type = lib.types.nullOr (lib.types.either lib.types.int (lib.types.listOf lib.types.int));
         default = null;
@@ -156,6 +171,11 @@ let
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/vllm ${utils.escapeSystemdExecArgs args}";
         DynamicUser = true;
+      }
+      // lib.optionalAttrs (instance.environmentFile != null) {
+        EnvironmentFile = instance.environmentFile;
+      }
+      // {
         CacheDirectory = "vllm/vllm-${name}";
         SupplementaryGroups = [
           "video"

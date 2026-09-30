@@ -26,7 +26,7 @@ let
     if delay:
         time.sleep(int(delay.group(1)))
 
-    env_keys = ["CUDA_VISIBLE_DEVICES", "HF_HOME", "VLLM_CACHE_ROOT"]
+    env_keys = ["CUDA_VISIBLE_DEVICES", "HF_HOME", "VLLM_CACHE_ROOT", "HF_TOKEN", "VLLM_API_KEY"]
 
 
     class Handler(BaseHTTPRequestHandler):
@@ -65,11 +65,19 @@ in
 
   nodes = {
     single = {
+      # mock secrets file
+      systemd.tmpfiles.settings."10-vllm-env"."/run/vllm-a.env".f = {
+        mode = "0600";
+        user = "root";
+        argument = "HF_TOKEN=hf_test_token\nVLLM_API_KEY=test-api-key";
+      };
+
       services.vllm = {
         enable = true;
         package = stubVllm;
         instances.a = {
           model = "test/model-a";
+          environmentFile = "/run/vllm-a.env";
           settings = {
             gpu-memory-utilization = 0.5;
             hf-overrides.foo = "bar";
@@ -168,6 +176,14 @@ in
           assert "hf-overrides:" in info["config"] and "foo: bar" in info["config"], info["config"]
           assert info["env"]["HF_HOME"] == "/var/cache/vllm/vllm-a", info
           assert info["env"]["CUDA_VISIBLE_DEVICES"] is None, info
+
+          # secrets from environmentFile reach the process...
+          assert info["env"]["HF_TOKEN"] == "hf_test_token", info
+          assert info["env"]["VLLM_API_KEY"] == "test-api-key", info
+          # ...but never the world-readable unit file or Nix store
+          unit = single.succeed("systemctl cat vllm-a.service")
+          assert "EnvironmentFile=/run/vllm-a.env" in unit, unit
+          assert "hf_test_token" not in unit and "test-api-key" not in unit, unit
 
           # default host is loopback only
           single.succeed("ss -ltn | grep -q '127.0.0.1:8000'")
