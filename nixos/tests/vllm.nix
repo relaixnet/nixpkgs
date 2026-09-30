@@ -58,6 +58,65 @@ let
   stubVllm = pkgs.writeShellScriptBin "vllm" ''
     exec ${lib.getExe pkgs.python3} ${stubServer} "$@"
   '';
+
+  # A failed assertion aborts evaluation of a test node, so evaluate a throwaway system
+  # and inspect `config.assertions` instead of building it.
+  failedAssertionMessages =
+    instances:
+    let
+      eval = pkgs.nixos {
+        boot.loader.grub.enable = false;
+        fileSystems."/" = {
+          device = "/dev/null";
+          fsType = "ext4";
+        };
+        system.stateVersion = lib.trivial.release;
+        services.vllm = {
+          enable = true;
+          package = stubVllm;
+          inherit instances;
+        };
+      };
+    in
+    map (a: a.message) (lib.filter (a: !a.assertion) eval.config.assertions);
+
+  duplicatePortMessages = failedAssertionMessages {
+    a = {
+      model = "test/model-a";
+      port = 8000;
+    };
+    b = {
+      model = "test/model-b";
+      port = 8000;
+    };
+    c = {
+      model = "test/model-c";
+      port = 8001;
+    };
+  };
+
+  distinctPortMessages = failedAssertionMessages {
+    a = {
+      model = "test/model-a";
+      port = 8000;
+    };
+    b = {
+      model = "test/model-b";
+      port = 8001;
+    };
+  };
+
+  disabledPortMessages = failedAssertionMessages {
+    a = {
+      model = "test/model-a";
+      port = 8000;
+    };
+    b = {
+      enable = false;
+      model = "test/model-b";
+      port = 8000;
+    };
+  };
 in
 {
   name = "vllm";
@@ -178,6 +237,19 @@ in
       # openFirewall on a loopback-only instance is pointless and warned about
       firewall_warnings = ${builtins.toJSON nodes.firewallLoopback.config.warnings}
       assert len(firewall_warnings) == 1 and "openFirewall" in firewall_warnings[0], firewall_warnings
+
+      # instances configured with the same port are rejected
+      duplicate_port = ${builtins.toJSON duplicatePortMessages}
+      # only a and b clash; c has its own port and must not be mentioned
+      assert duplicate_port == [
+          "vLLM instances a, b are all configured to use port 8000. Each instance needs a distinct port."
+      ], duplicate_port
+
+      distinct_port = ${builtins.toJSON distinctPortMessages}
+      assert distinct_port == [], distinct_port
+
+      disabled_port = ${builtins.toJSON disabledPortMessages}
+      assert disabled_port == [], disabled_port
 
       single.start()
       shared.start()
