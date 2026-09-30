@@ -26,7 +26,7 @@ let
     if delay:
         time.sleep(int(delay.group(1)))
 
-    env_keys = ["CUDA_VISIBLE_DEVICES", "HF_HOME", "VLLM_CACHE_ROOT", "HF_TOKEN", "VLLM_API_KEY"]
+    env_keys = ["CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "EXAMPLE_VAR", "HF_HOME", "VLLM_CACHE_ROOT", "HF_TOKEN", "VLLM_API_KEY"]
 
 
     class Handler(BaseHTTPRequestHandler):
@@ -137,6 +137,7 @@ in
         instances.a = {
           model = "test/model-a";
           environmentFile = "/run/vllm-a.env";
+          environment.EXAMPLE_VAR = "custom";
           settings = {
             gpu-memory-utilization = 0.5;
             hf-overrides.foo = "bar";
@@ -269,6 +270,9 @@ in
           assert "hf-overrides:" in info["config"] and "foo: bar" in info["config"], info["config"]
           assert info["env"]["HF_HOME"] == "/var/cache/vllm/vllm-a", info
           assert info["env"]["CUDA_VISIBLE_DEVICES"] is None, info
+          # no gpu pinned (e.g. CPU-only): no vendor variable is set at all
+          assert info["env"]["HIP_VISIBLE_DEVICES"] is None, info
+          assert info["env"]["EXAMPLE_VAR"] == "custom", info
 
           # secrets from environmentFile reach the process...
           assert info["env"]["HF_TOKEN"] == "hf_test_token", info
@@ -312,8 +316,11 @@ in
           after_x = shared.succeed("systemctl show -p After --value vllm-x.service")
           assert "vllm-y.service" not in after_x, after_x
 
-          assert get_debug(shared, 8001)["env"]["CUDA_VISIBLE_DEVICES"] == "0"
-          assert get_debug(shared, 8003)["env"]["CUDA_VISIBLE_DEVICES"] == "0,1"
+          # both vendor variables are set to the same devices
+          for port, devices in [(8001, "0"), (8003, "0,1")]:
+              env = get_debug(shared, port)["env"]
+              assert env["CUDA_VISIBLE_DEVICES"] == devices, env
+              assert env["HIP_VISIBLE_DEVICES"] == devices, env
 
       with subtest("disabled instance has no unit"):
           shared.fail("systemctl cat vllm-z.service")

@@ -62,6 +62,17 @@ let
           {option}`environmentFile` when exposing an instance to the network.
         '';
       };
+      environment = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { };
+        example = {
+          HSA_OVERRIDE_GFX_VERSION = "11.0.0";
+        };
+        description = ''
+          Extra environment variables for this instance, for example vendor specific ones.
+          They take precedence over the variables set by this module.
+        '';
+      };
       environmentFile = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
         default = null;
@@ -82,8 +93,10 @@ let
         default = null;
         description = ''
           Which GPU device index (or indices, for tensor parallelism) this
-          instance should be pinned to. Sets `CUDA_VISIBLE_DEVICES` for the
-          service.
+          instance should be pinned to. Sets `CUDA_VISIBLE_DEVICES` (NVIDIA)
+          and `HIP_VISIBLE_DEVICES` (AMD) for the service; the one that does not
+          apply to the backend of {option}`services.vllm.package` is ignored.
+          Leave it unset to not pin a device, for example on CPU-only hosts.
 
           When sharing a GPU, also set `gpu-memory-utilization` in `settings` on each instance so their
           memory budgets don't overlap:
@@ -126,7 +139,7 @@ let
     group:
     lib.optional
       (lib.length group > 1 && !(lib.any (n: hasMemoryUtilizationSet enabledInstanceConfigs.${n}) group))
-      "vLLM instances sharing a GPU (${lib.concatStringsSep ", " group}) do not set `gpu-memory-utilization`; this can cause CUDA out-of-memory or startup races when colocating on one device. See https://docs.vllm.ai/en/latest/configuration/conserving_memory/"
+      "vLLM instances sharing a GPU (${lib.concatStringsSep ", " group}) do not set `gpu-memory-utilization`; this can cause GPU out-of-memory errors or startup races when colocating on one device. See https://docs.vllm.ai/en/latest/configuration/conserving_memory/"
   ) sameGpuGroups;
 
   isLoopback = host: host == "localhost" || host == "::1" || lib.hasPrefix "127." host;
@@ -179,13 +192,20 @@ let
         HF_HOME = "/var/cache/vllm/vllm-${name}";
         VLLM_CACHE_ROOT = "/var/cache/vllm/vllm-${name}/vllm-cache";
       }
-      // lib.optionalAttrs (instance.gpu != null) {
-        CUDA_VISIBLE_DEVICES =
-          if builtins.isList instance.gpu then
-            lib.concatMapStringsSep "," toString instance.gpu
-          else
-            toString instance.gpu;
-      };
+      // lib.optionalAttrs (instance.gpu != null) (
+        let
+          devices =
+            if builtins.isList instance.gpu then
+              lib.concatMapStringsSep "," toString instance.gpu
+            else
+              toString instance.gpu;
+        in
+        {
+          CUDA_VISIBLE_DEVICES = devices;
+          HIP_VISIBLE_DEVICES = devices;
+        }
+      )
+      // instance.environment;
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/vllm ${utils.escapeSystemdExecArgs args}";
         DynamicUser = true;
