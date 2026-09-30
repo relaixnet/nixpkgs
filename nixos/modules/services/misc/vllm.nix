@@ -2,19 +2,21 @@
   lib,
   pkgs,
   config,
+  utils,
   ...
 }:
-with lib;
 let
   cfg = config.services.vllm;
-  
-  instanceConfig = { name, config, ... }: {
+
+  settingsFormat = pkgs.formats.yaml { };
+
+  instanceConfig = _: {
     options = {
-      enable = mkEnableOption "Enable this vLLM instance" // {
+      enable = lib.mkEnableOption "this vLLM instance" // {
         default = true;
       };
-      model = mkOption {
-        type = types.str;
+      model = lib.mkOption {
+        type = lib.types.str;
         description = ''
           The model to use for this vLLM instance.
 
@@ -23,8 +25,8 @@ let
         '';
         example = "google/gemma-4-E2B-it";
       };
-      settings = mkOption {
-        type = types.attrsOf types.anything;
+      settings = lib.mkOption {
+        type = settingsFormat.type;
         description = ''
           Additional settings for this vLLM instance.
 
@@ -37,26 +39,26 @@ let
           kv-cache-dtype = "auto";
         };
       };
-      port = mkOption {
-        type = types.int;
+      port = lib.mkOption {
+        type = lib.types.port;
         description = ''
           The port to use for this vLLM instance.
         '';
         default = 8000;
       };
-      host = mkOption {
-        type = types.str;
+      host = lib.mkOption {
+        type = lib.types.str;
         description = ''
           The host to use for this vLLM instance.
         '';
-        default = "0.0.0.0";
+        default = "127.0.0.1";
       };
-      gpu = mkOption {
-        type = types.nullOr (types.either types.int (types.listOf types.int));
+      gpu = lib.mkOption {
+        type = lib.types.nullOr (lib.types.either lib.types.int (lib.types.listOf lib.types.int));
         default = null;
         description = ''
           Which GPU device index (or indices, for tensor parallelism) this
-          instance should be pinned to. Sets `` for the
+          instance should be pinned to. Sets `CUDA_VISIBLE_DEVICES` for the
           service.
 
           When sharing a GPU, also set `gpu-memory-utilization` in `settings` on each instance so their
@@ -112,7 +114,7 @@ let
         "--config"
         configFile
       ];
-      configFile = (pkgs.formats.yaml { }).generate "vllm-${name}.yaml" instance.settings;
+      configFile = settingsFormat.generate "vllm-${name}.yaml" instance.settings;
       afterName = afterByName.${name} or null;
     in
     {
@@ -120,7 +122,11 @@ let
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ] ++ lib.optional (afterName != null) "vllm-${afterName}.service";
       wants = [ "network-online.target" ] ++ lib.optional (afterName != null) "vllm-${afterName}.service";
-      environment = lib.optionalAttrs (instance.gpu != null) {
+      environment = {
+        HF_HOME = "/var/cache/vllm/vllm-${name}";
+        VLLM_CACHE_ROOT = "/var/cache/vllm/vllm-${name}/vllm-cache";
+      }
+      // lib.optionalAttrs (instance.gpu != null) {
         CUDA_VISIBLE_DEVICES =
           if builtins.isList instance.gpu then
             lib.concatMapStringsSep "," toString instance.gpu
@@ -128,7 +134,13 @@ let
             toString instance.gpu;
       };
       serviceConfig = {
-        ExecStart = "${pkgs.vllm}/bin/vllm ${lib.escapeShellArgs args}";
+        ExecStart = "${cfg.package}/bin/vllm ${utils.escapeSystemdExecArgs args}";
+        DynamicUser = true;
+        CacheDirectory = "vllm/vllm-${name}";
+        SupplementaryGroups = [
+          "video"
+          "render"
+        ];
         Restart = "on-failure";
         RestartSec = 10;
       };
@@ -136,17 +148,26 @@ let
 in
 {
   options.services.vllm = {
-    enable = mkEnableOption "vllm service";
+    enable = lib.mkEnableOption "vllm service";
+    package = lib.mkPackageOption pkgs "vllm" { };
     instances = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule instanceConfig);
       default = { };
       description = ''
-        A list of vLLM instances to run.
+        Attribute set of vLLM instances to run, each as its own `vllm-<name>` systemd service.
+      '';
+      example = lib.literalExpression ''
+        {
+          myLocalGemmaInstance = {
+            model = "google/gemma-4-E2B-it";
+            port = 8000;
+          };
+        }
       '';
     };
   };
 
-  config = lib.mkIf (enabledInstanceConfigs != { } && cfg.enable) {
+  config = lib.mkIf (cfg.enable && enabledInstanceConfigs != { }) {
     assertions =
       let
         portGroups = lib.groupBy (n: toString enabledInstanceConfigs.${n}.port) instanceNames;
